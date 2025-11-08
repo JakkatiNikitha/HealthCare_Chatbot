@@ -1,0 +1,126 @@
+import os
+from flask import Flask, request, jsonify
+
+try:
+    import openai
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+
+# Initialize Flask App
+app = Flask(__name__)
+
+# Load OpenAI API Key from environment variable
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+if OPENAI_AVAILABLE and OPENAI_API_KEY:
+    openai.api_key = OPENAI_API_KEY
+else:
+    OPENAI_AVAILABLE = False
+
+def generate_summary(symptoms, language="English"):
+    """
+    Generates a summary sheet based on user symptoms.
+    """
+    if not OPENAI_AVAILABLE:
+        return "OpenAI API module not available or API key not set. Please check your configuration."
+    
+    prompt = f"""
+    You are an AI healthcare assistant. Please analyze the following symptoms and provide a detailed medical summary.
+    
+    Please structure your response in the following format:
+    1. Symptom Analysis
+       - List and describe each reported symptom
+       - Severity assessment
+    
+    2. Possible Causes
+       - Primary potential causes
+       - Secondary considerations
+    
+    3. Risk Assessment
+       - Immediate concerns
+       - Long-term considerations
+    
+    4. Recommended Actions
+       - Immediate steps
+       - When to seek emergency care
+       - Follow-up care recommendations
+    
+    5. Lifestyle Recommendations
+       - Diet and nutrition
+       - Rest and activity level
+       - Preventive measures
+    
+    Language: {language}
+    Reported Symptoms: {symptoms}
+    
+    Please provide a comprehensive but concise analysis.
+    """
+    
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[{"role": "system", "content": "You are a medical AI assistant trained to analyze symptoms and provide structured medical summaries."},
+                     {"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=1000
+        )
+        return response["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        return f"Error generating summary: {str(e)}"
+
+def ask_follow_up(symptoms, language="English"):
+    """
+    Asks follow-up questions to refine diagnosis.
+    """
+    if not OPENAI_AVAILABLE:
+        return "OpenAI API module not available. Please install openai package."
+    
+    prompt = f"""
+    You are an AI healthcare assistant. Based on these symptoms, ask two follow-up questions to clarify the issue.
+    Language: {language}
+    Symptoms: {symptoms}
+    """
+    response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response["choices"][0]["message"]["content"].strip()
+
+@app.route("/chatbot", methods=["POST"])
+def chatbot():
+    data = request.json
+    symptoms = data.get("symptoms", "")
+    language = data.get("language", "English")
+    is_follow_up = data.get("is_follow_up", False)
+    follow_up_answers = data.get("follow_up_answers", [])
+    
+    if not symptoms and not is_follow_up:
+        return jsonify({"error": "Please provide symptoms."}), 400
+    
+    if not is_follow_up:
+        # First interaction - generate follow-up questions
+        follow_up = ask_follow_up(symptoms, language)
+        return jsonify({
+            "is_follow_up": True,
+            "follow_up_questions": follow_up,
+            "original_symptoms": symptoms
+        })
+    else:
+        # Second interaction - generate final summary with follow-up answers
+        original_symptoms = data.get("original_symptoms", "")
+        summary = generate_summary(original_symptoms, language)
+        
+        # Add follow-up answers to the summary
+        if follow_up_answers:
+            summary += "\n\nFollow-up Information:\n"
+            for answer in follow_up_answers:
+                summary += f"Q: {answer['question']}\nA: {answer['answer']}\n"
+        
+        return jsonify({
+            "is_follow_up": False,
+            "summary_sheet": summary
+        })
+
+if __name__ == "__main__":
+    app.run(debug=True)
